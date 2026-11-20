@@ -24,7 +24,7 @@ agent_types:
   - personal
 
 outcomes:
-  - id: free_food.near
+  - id: freefood.near
     summary: >-
       Free food near a London area, postcode or station: community fridges,
       gurdwara langar and London hackathons

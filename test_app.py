@@ -19,7 +19,7 @@ from pippa_agentapp_sdk import LocalRunner, OutputShapeViolation, Result
 from app import App, NeedAPlace, NothingFound, PlaceNotFound, SourcesDown
 
 NOW = datetime(2026, 11, 20, 12, 0, tzinfo=timezone.utc)
-OUTCOME = "free_food.near"
+OUTCOME = "freefood.near"
 
 # ── Real responses (trimmed) ────────────────────────────────────────────────
 

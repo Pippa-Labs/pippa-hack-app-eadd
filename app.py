@@ -147,7 +147,7 @@ class App:
     # ── handle ──────────────────────────────────────────────────────────────
 
     def handle(self, call: Call) -> Result:
-        if call.outcome_id != "free_food.near":
+        if call.outcome_id != "freefood.near":
             raise AgentAppError(f"this app cannot do {call.outcome_id!r}")
 
         place = " ".join((call.inputs.get("location") or "").split())
