@@ -1,156 +1,310 @@
-"""Tests for your app. Run them with `pytest`.
+"""Tests for Free Food London. The build runs these on every push.
 
-Keep these. Publishing runs them, and a repository whose tests fail does not
-deploy — which is the fastest feedback you will get all day, because the
-alternative is finding out from a user that your app answers wrongly.
-
-`LocalRunner` is the same code the production runtime uses to call your app.
-So a call that works here works deployed, and — more usefully — a `Result`
-that violates your manifest fails here exactly as it would in production.
-That is the whole reason to test through the runner rather than calling
-`App().handle(...)` directly.
+The network is blocked here (conftest.py), so every source is stubbed
+through the one seam, `App._fetch`. The postcodes.io, Nominatim and Devpost
+samples are trimmed copies of real responses fetched on 2026-11-20. The
+Overpass sample follows Overpass's real JSON shape (`elements`, with `lat`/
+`lon` on nodes and `center` on ways); its places are made up.
 """
 
 from __future__ import annotations
 
+import json
+import urllib.error
 from datetime import datetime, timezone
 
 import pytest
-from pippa_agentapp_sdk import LocalRunner, OutputShapeViolation
+from pippa_agentapp_sdk import LocalRunner, OutputShapeViolation, Result
 
-from app import App, CannotReadDate
+from app import App, NeedAPlace, NothingFound, PlaceNotFound, SourcesDown
 
-# A fixed "now", so a test that passes today still passes next March.
-# 21:00 UTC on purpose: it is already the next day in New Zealand, which is
-# what makes the time zone test below mean anything. At 09:00 UTC it is still
-# the same day everywhere that matters, and the test would pass whether or not
-# the code handled time zones at all.
-NOW = datetime(2026, 10, 22, 21, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 11, 20, 12, 0, tzinfo=timezone.utc)
+OUTCOME = "free_food.near"
+
+# ── Real responses (trimmed) ────────────────────────────────────────────────
+
+POSTCODE_SE1_7PB = {
+    "status": 200,
+    "result": {"postcode": "SE1 7PB", "latitude": 51.501972, "longitude": -0.119003,
+               "region": "London", "admin_district": "Lambeth"},
+}
+OUTCODE_E1 = {
+    "status": 200,
+    "result": {"outcode": "E1", "latitude": 51.51738594459098,
+               "longitude": -0.05935232783641172, "region": None,
+               "admin_district": ["City of London", "Hackney", "Tower Hamlets"]},
+}
+POSTCODE_MANCHESTER = {
+    "status": 200,
+    "result": {"postcode": "M1 1AE", "latitude": 53.4808, "longitude": -2.2426,
+               "region": "North West"},
+}
+NOMINATIM_KINGS_CROSS = [{
+    "place_id": 280775640, "lat": "51.5323954", "lon": "-0.1230224",
+    "name": "London King's Cross", "type": "station",
+    "display_name": "London King's Cross, Euston Road, King's Cross, London "
+                    "Borough of Camden, Greater London, England, N1C 4AP, United Kingdom",
+}]
+DEVPOST = {
+    "hackathons": [
+        # Hack Western is in London, Ontario: its location does not say
+        # London, so it must be left out.
+        {"id": 31536, "title": "Hack Western 13", "url": "https://hack-western-13.devpost.com/",
+         "displayed_location": {"icon": "map-marker-alt", "location": "Ronald D. Schmeichel Building"},
+         "open_state": "upcoming", "submission_period_dates": "Nov 20 - 22, 2026"},
+        {"id": 31998, "title": "WoHack", "url": "https://wohack.devpost.com/",
+         "displayed_location": {"icon": "map-marker-alt", "location": "Queen Mary University of london"},
+         "open_state": "upcoming", "submission_period_dates": "Nov 21, 2026"},
+    ],
+    "meta": {"total_count": 2, "per_page": 9, "fuzzy": False},
+}
+
+# ── Overpass, in its real shape ─────────────────────────────────────────────
+
+OVERPASS = {
+    "version": 0.6,
+    "generator": "Overpass API",
+    "elements": [
+        {"type": "node", "id": 1, "lat": 51.4930, "lon": -0.1080,
+         "tags": {"amenity": "place_of_worship", "religion": "sikh",
+                  "name": "Example Gurdwara"}},
+        # The same gurdwara mapped again as an outline: counted once.
+        {"type": "way", "id": 2, "center": {"lat": 51.4931, "lon": -0.1081},
+         "tags": {"amenity": "place_of_worship", "religion": "sikh",
+                  "name": "Example Gurdwara", "building": "yes"}},
+        {"type": "node", "id": 3, "lat": 51.5050, "lon": -0.1150,
+         "tags": {"amenity": "food_sharing", "name": "Example Community Fridge",
+                  "opening_hours": "Mo-Fr 10:00-18:00"}},
+        {"type": "node", "id": 4, "lat": 51.5100, "lon": -0.1250,
+         "tags": {"amenity": "give_box"}},
+        # Need-based food aid: never returned.
+        {"type": "node", "id": 5, "lat": 51.5021, "lon": -0.1191,
+         "tags": {"amenity": "food_sharing", "name": "Example Foodbank",
+                  "social_facility": "food_bank"}},
+        {"type": "node", "id": 6, "lat": 51.5022, "lon": -0.1192,
+         "tags": {"amenity": "social_facility", "social_facility": "soup_kitchen",
+                  "name": "Example Soup Kitchen"}},
+        # A different place of worship: not a gurdwara, not returned.
+        {"type": "node", "id": 7, "lat": 51.5023, "lon": -0.1193,
+         "tags": {"amenity": "place_of_worship", "religion": "christian", "name": "Example Church"}},
+    ],
+}
 
 
-def call(inputs: dict, outcome: str = "days.until", *, explicit: bool = False):
-    """Run one outcome the way the runtime does, and return the Result.
+def http_error(code: int) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError("https://example.com/", code, "error", {}, None)
 
-    `granted_secrets` is required even though a hackathon app never has any —
-    the runner takes it on every call, so an empty dict is how you say "none".
 
-    `explicit=True` calls the app the way Pippa does when the person picked
-    it by name (`@Days Until ...`) instead of Pippa choosing it. The app sees
-    it as `call.context.explicit`.
-    """
-    return LocalRunner(App()).call(
-        outcome, inputs, granted_secrets={}, now=NOW, request_id="test-1",
-        explicit=explicit,
+def stubbed(**answers) -> App:
+    """An App whose `_fetch` answers by host: a dict/list, bytes, or an exception."""
+    hosts = {
+        "postcodes": "api.postcodes.io",
+        "nominatim": "nominatim.openstreetmap.org",
+        "overpass": "overpass-api.de",
+        "devpost": "devpost.com",
+    }
+    app = App()
+    app.urls = []
+
+    def fake(url, timeout=7.0):
+        app.urls.append(url)
+        for key, host in hosts.items():
+            if f"://{host}/" in url:
+                answer = answers.get(key, AssertionError(f"{key} should not be called"))
+                if isinstance(answer, BaseException):
+                    raise answer
+                return answer if isinstance(answer, bytes) else json.dumps(answer).encode()
+        raise AssertionError(f"unexpected url {url}")
+
+    app._fetch = fake
+    return app
+
+
+def call(app: App, location: str, *, explicit: bool = False) -> Result:
+    return LocalRunner(app).call(
+        OUTCOME, {"location": location}, granted_secrets={}, now=NOW,
+        request_id="test-1", explicit=explicit,
     ).result
 
 
+def all_up(**overrides) -> App:
+    answers = {"postcodes": POSTCODE_SE1_7PB, "nominatim": NOMINATIM_KINGS_CROSS,
+               "overpass": OVERPASS, "devpost": DEVPOST}
+    answers.update(overrides)
+    return stubbed(**answers)
+
+
+# ── The happy path ──────────────────────────────────────────────────────────
+
+
 def test_the_manifest_is_valid():
-    """The first thing to break, and the easiest to miss.
-
-    `App()` validates manifest.yaml as it is constructed, so this fails the
-    moment the manifest is malformed — before anything else has a chance to
-    produce a more confusing error.
-    """
     app = App()
-    assert app.manifest.app_id.startswith("hack.")
-    assert [o.id for o in app.manifest.outcomes] == ["days.until"]
+    assert app.manifest.app_id == "hack.app_eadd"
+    assert [o.id for o in app.manifest.outcomes] == [OUTCOME]
 
 
-def test_it_counts_the_days():
-    result = call({"date": "2026-12-25"})
-    assert result.data["days"] == 64
-    assert result.data["target_date"] == "2026-12-25"
-    assert result.data["weekday"] == "Friday"
-    assert result.data["already_passed"] is False
+def test_a_postcode_finds_places_nearest_first_and_london_hackathons():
+    app = all_up()
+    result = call(app, "SE1 7PB")
+    places = result.data["places"]
+
+    assert [p.split(",")[0] for p in places] == [
+        "Example Community Fridge", "Give box", "Example Gurdwara"]
+    distances = [int(p.split(", ")[2].removesuffix(" m")) for p in places]
+    assert distances == sorted(distances)
+
+    fridge, _, gurdwara = places
+    assert "community fridge" in fridge and "open Mo-Fr 10:00-18:00" in fridge
+    assert "take what you'll use" in fridge
+    assert "gurdwara (free vegetarian langar for all)" in gurdwara
+    assert "cover your head, shoes off, donations welcome" in gurdwara
+    assert all(p.endswith("(source: OpenStreetMap)") for p in places)
+
+    assert result.data["events"] == [
+        "WoHack, Nov 21, 2026, Queen Mary University of london, "
+        "https://wohack.devpost.com/ (source: Devpost)"]
+    assert "OpenStreetMap contributors" in result.data["sources"]
+    assert "Devpost" in result.data["sources"]
+    assert "Could not reach" not in result.data["sources"]
+    assert result.narrative.startswith("The nearest free food to SE1 7PB is Example Community Fridge")
+    assert any("api.postcodes.io/postcodes/SE17PB" in u for u in app.urls)
 
 
-def test_a_date_written_in_words_works():
-    result = call({"date": "25 December"})
-    assert result.data["target_date"] == "2026-12-25"
+def test_food_banks_and_soup_kitchens_are_never_included():
+    places = call(all_up(), "SE1 7PB").data["places"]
+    joined = " ".join(places).lower()
+    assert "foodbank" not in joined and "soup kitchen" not in joined
+    assert "church" not in joined
 
 
-def test_a_date_already_gone_rolls_to_next_year():
-    """`1 January` asked in October means the January that is coming."""
-    result = call({"date": "1 January"})
-    assert result.data["target_date"] == "2027-01-01"
-    assert result.data["already_passed"] is False
+def test_an_outcode_uses_postcodes_io():
+    app = all_up(postcodes=OUTCODE_E1)
+    call(app, "e1")
+    assert any("api.postcodes.io/outcodes/E1" in u for u in app.urls)
 
 
-def test_the_users_timezone_decides_what_today_is():
-    """21:00 UTC is already tomorrow in Auckland.
-
-    Worth a test of its own: it is the bug every date app has, it only shows
-    up for users in some parts of the world, and it is invisible if you only
-    ever test from one place.
-    """
-    here = call({"date": "2026-10-23"}).data["days"]
-    there = call({"date": "2026-10-23", "timezone": "Pacific/Auckland"}).data["days"]
-    assert here == 1    # still the 22nd in UTC
-    assert there == 0   # already the 23rd in Auckland
+def test_a_station_uses_nominatim_limited_to_london():
+    app = all_up()
+    result = call(app, "King's Cross station")
+    nominatim = [u for u in app.urls if "nominatim" in u][0]
+    assert "bounded=1" in nominatim and "viewbox=" in nominatim
+    assert "King%27s+Cross+station" in nominatim
+    assert result.data["places"]
 
 
-def test_a_made_up_timezone_never_reaches_the_app():
-    """The platform checks declared types before your code runs.
-
-    `type: timezone` in the manifest means the runtime validates it. So your
-    app does not need to — and should not, because a hand-rolled check here
-    would be dead code that looks load-bearing.
-    """
-    from pippa_agentapp_sdk import InputShapeViolation
-
-    with pytest.raises(InputShapeViolation):
-        call({"date": "2026-12-25", "timezone": "Mars/Olympus"})
+def test_no_more_than_five_places():
+    many = {"elements": [
+        {"type": "node", "id": i, "lat": 51.502 + i / 1000, "lon": -0.119,
+         "tags": {"amenity": "food_sharing", "name": f"Fridge {i}"}}
+        for i in range(1, 9)]}
+    places = call(all_up(overpass=many), "SE1 7PB").data["places"]
+    assert [p.split(",")[0] for p in places] == [f"Fridge {i}" for i in range(1, 6)]
 
 
-def test_no_date_is_an_error_a_user_can_read():
-    with pytest.raises(CannotReadDate) as failure:
-        call({"date": ""})
-    # `user_message` is the only part a user may be shown, so it is the part
-    # worth asserting on. The rest stays in the logs.
-    assert failure.value.user_message == "I could not work out which date you meant."
+# ── One source fails: the others are still returned, and named ─────────────
 
 
-def test_nonsense_is_refused_rather_than_guessed():
-    with pytest.raises(CannotReadDate):
-        call({"date": "a week on Thursday-ish"})
+def test_overpass_rate_limited_still_returns_events_and_says_so():
+    result = call(all_up(overpass=http_error(429)), "SE1 7PB")
+    assert result.data["places"] == []
+    assert result.data["events"]
+    assert "Could not reach this time: OpenStreetMap (Overpass)." in result.data["sources"]
+    assert "could not reach OpenStreetMap (Overpass)" in result.narrative
+
+
+def test_devpost_timeout_still_returns_places_and_says_so():
+    """A timeout is not a URLError: it needs, and has, its own clause."""
+    result = call(all_up(devpost=TimeoutError("timed out")), "SE1 7PB")
+    assert result.data["places"]
+    assert result.data["events"] == []
+    assert "Could not reach this time: Devpost." in result.data["sources"]
+
+
+def test_overpass_giving_up_inside_a_200_counts_as_a_failure():
+    gave_up = {"elements": [], "remark": "runtime error: Query timed out"}
+    result = call(all_up(overpass=gave_up), "SE1 7PB")
+    assert "OpenStreetMap (Overpass)" in result.data["sources"]
+
+
+def test_an_html_error_page_counts_as_a_failure():
+    result = call(all_up(devpost=b"<html>502 Bad Gateway</html>"), "SE1 7PB")
+    assert "Could not reach this time: Devpost." in result.data["sources"]
+
+
+def test_geocoder_down_still_returns_events():
+    result = call(all_up(nominatim=http_error(503)), "Camden")
+    assert result.data["places"] == []
+    assert result.data["events"]
+    assert "place lookup" in result.data["sources"]
+
+
+def test_everything_down_is_a_retryable_error_naming_the_sources():
+    app = all_up(overpass=TimeoutError(), devpost=urllib.error.URLError("dns"))
+    with pytest.raises(SourcesDown) as failure:
+        call(app, "SE1 7PB")
+    assert failure.value.retryable is True
+    assert "OpenStreetMap (Overpass)" in failure.value.user_message
+    assert "Devpost" in failure.value.user_message
+
+
+# ── Nothing there, or not a place ───────────────────────────────────────────
+
+
+def test_nothing_found_suggests_a_wider_area():
+    empty_devpost = {"hackathons": [], "meta": {"total_count": 0}}
+    with pytest.raises(NothingFound) as failure:
+        call(all_up(overpass={"elements": []}, devpost=empty_devpost), "SE1 7PB")
+    assert "wider area" in failure.value.user_message
+    assert "SE1 7PB" in failure.value.user_message
+
+
+def test_a_place_nominatim_has_never_heard_of_is_named():
+    """Nominatim answers 200 with [] for a place that does not exist."""
+    with pytest.raises(PlaceNotFound) as failure:
+        call(all_up(nominatim=[]), "Narnia")
+    assert failure.value.user_message.startswith("I could not find Narnia in London.")
+
+
+def test_an_unknown_postcode_is_named():
+    """postcodes.io answers 404 for a postcode that does not exist."""
+    with pytest.raises(PlaceNotFound) as failure:
+        call(all_up(postcodes=http_error(404)), "ZZ9 9ZZ")
+    assert "ZZ9 9ZZ" in failure.value.user_message
+
+
+def test_a_postcode_outside_london_is_refused():
+    with pytest.raises(PlaceNotFound):
+        call(all_up(postcodes=POSTCODE_MANCHESTER), "M1 1AE")
+
+
+# ── No place named ──────────────────────────────────────────────────────────
+
+
+def test_no_place_returns_london_hackathons_without_guessing_a_place():
+    app = stubbed(devpost=DEVPOST)  # any geocode or Overpass call would fail
+    result = call(app, "")
+    assert result.data["places"] == []
+    assert len(result.data["events"]) == 1
+    assert "tell me an area" in result.narrative
+
+
+def test_no_place_and_no_events_asks_for_a_place():
+    with pytest.raises(NeedAPlace) as failure:
+        call(stubbed(devpost={"hackathons": []}), "")
+    assert "London area, postcode or station" in failure.value.user_message
+
+
+# ── Picked with @, and the contract ─────────────────────────────────────────
 
 
 def test_picked_by_name_it_answers_and_refuses_as_usual():
-    """`@Days Until ...` in the chat: the person picked this app themselves.
-
-    Then nothing checks whether the message suits the app. It is called
-    whatever the words, and `call.context.explicit` is True. The right
-    response is the ordinary one: answer what you can, and refuse only for a
-    missing or unreadable input, with a sentence that says what was wrong.
-    Never refuse because the message does not look like your example phrases
-    — the person has already told you it is for you.
-
-    This app never reads the flag, because it never needed to: it already
-    refuses only for a missing or unreadable date. If yours does, read it as
-    `getattr(call.context, "explicit", False)`. An app published before the
-    platform update that added the flag runs on an SDK that does not have
-    it, until you publish it again.
-    """
-    picked = call({"date": "2026-12-25"}, explicit=True)
-    assert picked.data == call({"date": "2026-12-25"}).data
-
-    with pytest.raises(CannotReadDate) as failure:
-        call({"date": ""}, explicit=True)
-    assert failure.value.user_message == "I could not work out which date you meant."
+    picked = call(all_up(), "SE1 7PB", explicit=True)
+    assert picked.data == call(all_up(), "SE1 7PB").data
+    with pytest.raises(PlaceNotFound):
+        call(all_up(nominatim=[]), "Narnia", explicit=True)
 
 
 def test_the_runner_enforces_the_manifest(monkeypatch):
-    """Proof that the contract is real, and the reason to test through it.
-
-    An app returning a field it did not declare is refused. You will meet this
-    error if you add something to `data` and forget to add it to `output` in
-    manifest.yaml — which is the single most common way a first app fails
-    after it deploys.
-    """
-    from pippa_agentapp_sdk import Result
-
-    monkeypatch.setattr(
-        App, "handle", lambda self, c: Result(data={"surprise": "hello"})
-    )
+    monkeypatch.setattr(App, "handle", lambda self, c: Result(data={"surprise": "hello"}))
     with pytest.raises(OutputShapeViolation):
-        call({"date": "2026-12-25"})
+        call(App(), "SE1 7PB")

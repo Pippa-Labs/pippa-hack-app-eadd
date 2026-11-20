@@ -1,3 +1,34 @@
+# Free Food London
+
+A Pippa app that tells a student where to get free food near a London area,
+postcode or station: community fridges and food-sharing points, gurdwaras
+(whose langar is a free vegetarian meal open to everyone), and upcoming
+in-person London hackathons, which usually feed participants. Ask it things
+like *"free food near Camden"*, *"langar near Southall"* or *"any free food
+events in london"*.
+
+Food banks and soup kitchens are never listed: they are for people in need.
+
+## Trust
+
+- **No keys, no accounts.** Every source is public and keyless:
+  postcodes.io, Nominatim and Overpass (OpenStreetMap), and Devpost.
+- **No social media scraping.** Those sites need a login and their terms
+  forbid it, so the app does not touch them.
+- **Keeps nothing.** Each question is answered fresh and forgotten; the app
+  is never told who is asking.
+- **Every item names its source**: places say OpenStreetMap, events say
+  Devpost and link to the event page, and the answer says which source, if
+  any, could not be reached.
+
+## Roadmap
+
+Once Pippa supports agent-to-agent, ask your contacts' agents whether they
+know of free-food events, sharing only "free food near &lt;area&gt;" and
+nothing about you.
+
+---
+
 # Build an app for Pippa
 
 You have about two hours. At the end of it, a program you built will be running
