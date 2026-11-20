@@ -13,7 +13,7 @@ app:
   # Fixed by the repository name (Pippa-Labs/pippa-hack-app-eadd).
   id: hack.app_eadd
   name: Free Food London
-  version: 0.1.0
+  version: 0.2.0
   # Never use the word "by" here: the badge splits on it.
   summary: >-
     Finds free food near a London area, postcode or station: community
@@ -37,6 +37,10 @@ outcomes:
       - langar near
       - free lunch near
       - any free food events in london
+      - free asian food in london
+      - free pizza near
+      - free food events in camden on saturday
+      - free vegetarian food near
     inputs:
       - name: location
         type: string
@@ -47,6 +51,21 @@ outcomes:
           Cross station". If the message does not name a place, return an
           empty string. Never guess, and never fill in a place the user did
           not write.
+      - name: when
+        type: string
+        required: false
+        description: >-
+          How far ahead the user wants free food, as they wrote it, for
+          example "next 3 days", "saturday", "this weekend" or "next week". If
+          the message does not say when, return an empty string. Never guess.
+      - name: cuisine
+        type: string
+        required: false
+        description: >-
+          The kind of food the user asked for, as they wrote it, for example
+          "asian", "pizza", "indian" or "vegetarian". If the message only
+          says "free food", "a free meal" or "free lunch" without a kind of
+          food, return an empty string. Never guess.
     output:
       - name: places
         type: array
@@ -58,12 +77,21 @@ outcomes:
         type: array
         item_type: string
         description: >-
-          Up to 3 upcoming in-person London hackathons from Devpost, each as
-          "name, date, location, link".
+          Up to 3 London events in the time asked for (default the next 14
+          days), soonest first, each as "name, label, date, location, link",
+          where the label is "hackathon (usually fed)" or "listing mentions
+          food".
       - name: sources
         type: string
         description: >-
           Credits for the data (OpenStreetMap contributors, Devpost), and any
           source that could not be reached this time.
+      - name: note
+        type: string
+        required: false
+        description: >-
+          Anything the user should know about this answer, for example that
+          saved map data was used because the live map was slow, or that
+          nothing matched the cuisine so everything else is shown.
 
 # No API keys, no connectors, no secrets: every source is public and keyless.

@@ -1,16 +1,19 @@
 """Free Food London: where a student can get free food near a London place.
 
-One outcome, three live sources, no API keys:
+One outcome, live sources, no API keys:
 
 1. Geocode the place: postcodes.io for a postcode or outcode, otherwise
    Nominatim (OpenStreetMap's geocoder), held to a London bounding box.
 2. Overpass (OpenStreetMap): community fridges and food-sharing points
    (amenity=food_sharing, amenity=give_box) and gurdwaras, whose langar is a
-   free vegetarian meal open to everyone, within about 2 km.
+   free vegetarian meal open to everyone, within about 2 km. overpass-api.de
+   first, then a mirror. If neither answers in time, the saved Greater London
+   snapshot in osm_london.json (real OpenStreetMap data, dated) is used.
 3. Devpost: upcoming in-person hackathons whose location mentions London.
 
-Each source runs in its own thread with a ~7 s timeout. If one fails, the
-others are still returned, and `sources` and the narrative say which failed.
+Every source runs in its own thread with a ~6 s timeout, and the whole call
+answers within ~12 s. If a source fails, the others are still returned, and
+`sources`, `note` and the narrative say which.
 
 Food banks and soup kitchens are never included: they are for people in
 need, and this app is for students looking for food that is free to anyone.
@@ -25,9 +28,11 @@ import re
 import time
 import urllib.error
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote, urlencode
+from zoneinfo import ZoneInfo
 
 from pippa_agentapp_sdk import (
     AgentAppError,
@@ -40,18 +45,24 @@ from pippa_agentapp_sdk import (
 )
 
 MANIFEST_PATH = Path(__file__).with_name("manifest.yaml")
+SNAPSHOT_PATH = Path(__file__).with_name("osm_london.json")
 
 #: Nominatim and Overpass ask for a descriptive User-Agent; urllib sends none.
-USER_AGENT = "pippa-agent-app-free-food-london/0.1 (https://github.com/Pippa-Labs)"
+USER_AGENT = "pippa-agent-app-free-food-london/0.2 (https://github.com/Pippa-Labs)"
 
 #: Per-request timeout for each source, in seconds.
-TIMEOUT = 7.0
-#: The whole call must finish inside Pippa's 20 s; leave some margin.
-BUDGET = 17.0
+TIMEOUT = 6.0
+#: The whole call answers within this many seconds (Pippa stops it at 20).
+BUDGET = 12.0
+#: Ask the Overpass mirror too if the main server has not answered by then.
+MIRROR_AFTER = 3.0
+OVERPASS_HOSTS = ("overpass-api.de", "overpass.kumi.systems")
 RADIUS_M = 2000
 MAX_PLACES = 5
 MAX_EVENTS = 3
+DEFAULT_DAYS = 14
 
+LONDON_TZ = ZoneInfo("Europe/London")
 #: Greater London, with a small margin: south, north, west, east.
 LONDON_BOX = (51.28, 51.70, -0.52, 0.34)
 
@@ -63,16 +74,29 @@ NEED_BASED = ("food bank", "foodbank", "soup kitchen")
 
 FRIDGE_TIP = "tip: take what you'll use"
 LANGAR_TIP = "tip: cover your head, shoes off, donations welcome"
+HACKATHON = "hackathon (usually fed)"
 
-OSM_CREDIT = (
-    "Places © OpenStreetMap contributors (ODbL, openstreetmap.org/copyright), "
-    "found with the Overpass API; locations from postcodes.io and Nominatim."
-)
-DEVPOST_CREDIT = "Events from Devpost (devpost.com/hackathons)."
+#: Langar is Punjabi vegetarian food. Not vegan: it is cooked with dairy.
+LANGAR_CUISINES = {"indian", "asian", "south asian", "punjabi", "vegetarian", "veggie", "veg"}
+#: Words that count as a match for a cuisine in an event's title or text.
+CUISINE_WORDS = {
+    "asian": ["asian", "chinese", "japanese", "korean", "thai", "vietnamese",
+              "indian", "sushi", "ramen", "dumplings?", "dim sum", "curry", "boba"],
+    "indian": ["indian", "curry", "biryani", "samosas?", "punjabi", "langar"],
+    "vegetarian": ["vegetarian", "veggie", "vegan", "plant[- ]based"],
+    "veggie": ["vegetarian", "veggie", "vegan", "plant[- ]based"],
+    "vegan": ["vegan", "plant[- ]based"],
+    "pizza": ["pizzas?"],
+}
 
 GEOCODE = "the place lookup (postcodes.io / Nominatim)"
 OVERPASS = "OpenStreetMap (Overpass)"
 DEVPOST = "Devpost"
+
+#: What a source thread may fail with (TimeoutError includes a thread that
+#: did not finish in time). A failed source never sinks the call: it is named
+#: in `sources` and the narrative, and the others still answer.
+SOURCE_ERRORS = (TimeoutError, ValueError, KeyError, TypeError, AttributeError)
 
 
 class PlaceNotFound(AgentAppError):
@@ -106,6 +130,9 @@ class SourcesDown(ServiceUnavailableError):
 
 class SourceFailed(Exception):
     """One source could not answer. Internal: never shown to the user."""
+
+
+SOURCE_ERRORS = (SourceFailed, *SOURCE_ERRORS)
 
 
 class App:
@@ -150,21 +177,30 @@ class App:
         if call.outcome_id != "freefood.near":
             raise AgentAppError(f"this app cannot do {call.outcome_id!r}")
 
-        place = " ".join((call.inputs.get("location") or "").split())
+        place = _clean(call.inputs.get("location"))
+        when = _clean(call.inputs.get("when"))
+        cuisine = _clean(call.inputs.get("cuisine"))
+        today = call.context.now.astimezone(LONDON_TZ).date()
+        start, end, period, understood = _window(when, today)
+
         deadline = time.monotonic() + BUDGET
         failed: list[str] = []
-        places: list[tuple[int, str, str]] = []
+        notes: list[str] = []
+        places: list[dict] = []
         label = place
+        used_snapshot = False
 
-        pool = ThreadPoolExecutor(max_workers=3)
+        pool = ThreadPoolExecutor(max_workers=4)
         try:
-            events_job = pool.submit(self._events)
+            # Events need no place, so they start at once, alongside the
+            # geocode; Overpass starts the moment there are coordinates.
+            events_job = pool.submit(self._devpost)
 
             if place:
                 spot = None
                 try:
-                    spot = pool.submit(self._geocode, place).result(timeout=TIMEOUT + 1)
-                except (SourceFailed, TimeoutError, ValueError, KeyError, TypeError):
+                    spot = pool.submit(self._geocode, place).result(timeout=TIMEOUT + 0.5)
+                except SOURCE_ERRORS:
                     failed.append(GEOCODE)
                 else:
                     if spot is None:
@@ -178,53 +214,81 @@ class App:
                     lat, lon, label = spot
 
                 if spot is not None:
-                    wait = max(0.5, min(TIMEOUT + 1, deadline - time.monotonic()))
-                    try:
-                        places = pool.submit(self._places, lat, lon).result(timeout=wait)
-                    except (SourceFailed, TimeoutError, ValueError, KeyError, TypeError):
-                        failed.append(OVERPASS)
+                    live = self._live_places(pool, lat, lon, deadline)
+                    if live is not None:
+                        places = live
+                    else:
+                        saved = _snapshot()
+                        if saved:
+                            places = _parse_elements(saved["elements"], lat, lon)
+                            used_snapshot = True
+                            notes.append(
+                                "The live map was slow, so places come from saved "
+                                f"OpenStreetMap data from {saved['fetched']}."
+                            )
+                        else:
+                            failed.append(OVERPASS)
 
-            events: list[str] = []
-            wait = max(0.5, deadline - time.monotonic())
+            raw_events: list[dict] = []
             try:
-                events = events_job.result(timeout=wait)
-            except (SourceFailed, TimeoutError, ValueError, KeyError, TypeError):
+                raw_events = events_job.result(timeout=max(0.2, deadline - time.monotonic()))
+            except SOURCE_ERRORS:
                 failed.append(DEVPOST)
         finally:
-            # Do not wait for a source that is still hanging: its answer is
-            # no longer wanted, and the user is.
+            # Never wait for a source that is still hanging: its answer is no
+            # longer wanted, and the user is.
             pool.shutdown(wait=False, cancel_futures=True)
 
+        if not understood:
+            notes.append(f"I could not tell when \"{when}\" is, so events are for the next 14 days.")
+        events = [e for e in raw_events if _in_window(e, start, end, bool(when))]
+        events.sort(key=lambda e: e["start"] or date.max)
+
+        if cuisine:
+            places, events = _match_cuisine(cuisine, places, events, notes)
+
+        places = places[:MAX_PLACES]
+        events = events[:MAX_EVENTS]
+
         if not places and not events:
-            if not place:
-                raise NeedAPlace("no location given and no London hackathons found")
             if failed:
                 error = SourcesDown(f"sources failed: {failed}")
                 error.user_message = (
                     f"I could not reach {_join(failed)} just now, and found no "
-                    f"free food near {label} from the rest. Please try again shortly."
+                    f"free food {'near ' + label if label else 'in London'} from "
+                    "the rest. Please try again shortly."
                 )
                 raise error
+            if not place:
+                raise NeedAPlace(f"no location, and no London events {period}")
             error = NothingFound(f"nothing within {RADIUS_M} m of {label!r}")
             error.user_message = (
                 f"I found no community fridges or gurdwaras within 2 km of "
-                f"{label}, and no upcoming in-person London hackathons on "
-                "Devpost. Try a wider area, like the borough or a bigger town "
-                "centre nearby."
+                f"{label}, and no London events with free food {period}. Try a "
+                "wider area, like the borough or a bigger town centre nearby, "
+                "or a longer time, like \"next month\"."
             )
             raise error
 
-        sources = OSM_CREDIT + " " + DEVPOST_CREDIT
+        sources = (
+            "Places © OpenStreetMap contributors (ODbL, openstreetmap.org/copyright)"
+            + (", from the saved snapshot" if used_snapshot else ", live from the Overpass API")
+            + "; locations from postcodes.io and Nominatim. Events from Devpost (devpost.com/hackathons)."
+        )
         if failed:
             sources += f" Could not reach this time: {_join(failed)}."
 
+        data = {
+            "places": [p["text"] for p in places],
+            "events": [_event_text(e) for e in events],
+            "sources": sources,
+        }
+        if notes:
+            data["note"] = " ".join(notes)
+
         return Result(
-            data={
-                "places": [text for _, _, text in places],
-                "events": events,
-                "sources": sources,
-            },
-            narrative=_narrative(place, label, places, events, failed),
+            data=data,
+            narrative=_narrative(place, label, places, events, period, failed),
             warnings=tuple(f"Could not reach {name}." for name in failed),
         )
 
@@ -246,7 +310,7 @@ class App:
             lat, lon = result.get("latitude"), result.get("longitude")
             label = result.get("postcode") or result.get("outcode") or upper
         else:
-            west, south, east, north = LONDON_BOX[2], LONDON_BOX[0], LONDON_BOX[3], LONDON_BOX[1]
+            south, north, west, east = LONDON_BOX
             data = self._get_json(
                 "https://nominatim.openstreetmap.org/search?"
                 + urlencode({
@@ -273,55 +337,52 @@ class App:
 
     # ── Source 2: OpenStreetMap, through Overpass ───────────────────────────
 
-    def _places(self, lat: float, lon: float) -> list[tuple[int, str, str]]:
+    def _live_places(self, pool, lat, lon, deadline):
+        """Places from the main Overpass server, or its mirror, or None.
+
+        The mirror is asked only once the main server has failed or has not
+        answered within MIRROR_AFTER seconds, so a healthy server is never
+        asked twice. The first good answer wins.
+        """
+        pending = {pool.submit(self._overpass, OVERPASS_HOSTS[0], lat, lon)}
+        mirror_at = time.monotonic() + MIRROR_AFTER
+        mirror = False
+        while pending or not mirror:
+            now = time.monotonic()
+            if now >= deadline:
+                return None
+            until = deadline if mirror else min(deadline, mirror_at)
+            done, pending = wait(pending, timeout=max(0.0, until - now), return_when=FIRST_COMPLETED)
+            for job in done:
+                try:
+                    return job.result()
+                except SOURCE_ERRORS:
+                    pass
+            if not mirror and (not pending or time.monotonic() >= mirror_at):
+                pending.add(pool.submit(self._overpass, OVERPASS_HOSTS[1], lat, lon))
+                mirror = True
+        return None
+
+    def _overpass(self, host: str, lat: float, lon: float) -> list[dict]:
         around = f"(around:{RADIUS_M},{lat:.5f},{lon:.5f})"
         query = (
             "[out:json][timeout:6];("
             f'nwr{around}["amenity"="food_sharing"];'
             f'nwr{around}["amenity"="give_box"];'
             f'nwr{around}["amenity"="place_of_worship"]["religion"="sikh"];'
-            ");out center tags;"
+            ");out center 20;"
         )
-        data = self._get_json(
-            "https://overpass-api.de/api/interpreter?" + urlencode({"data": query})
-        )
+        data = self._get_json(f"https://{host}/api/interpreter?" + urlencode({"data": query}))
         if not isinstance(data, dict) or not isinstance(data.get("elements"), list):
             raise SourceFailed("Overpass answered without a list of elements")
         if not data["elements"] and data.get("remark"):
             # Overpass reports its own timeouts as a 200 with a remark.
             raise SourceFailed("Overpass gave up on the query")
-
-        best: dict[tuple[str, str], tuple[int, str, str]] = {}
-        for element in data["elements"]:
-            if not isinstance(element, dict):
-                continue
-            tags = element.get("tags") or {}
-            kind = _kind(tags)
-            if kind is None or _need_based(tags):
-                continue
-            centre = element.get("center") or {}
-            plat = element.get("lat", centre.get("lat"))
-            plon = element.get("lon", centre.get("lon"))
-            if plat is None or plon is None:
-                continue
-            metres = int(round(_distance_m(lat, lon, float(plat), float(plon)) / 10) * 10)
-            label, tip, unnamed = kind
-            name = (tags.get("name") or tags.get("name:en") or unnamed).strip()
-            parts = [name, label, f"{metres} m"]
-            if tags.get("opening_hours"):
-                parts.append(f"open {tags['opening_hours'].strip()}")
-            parts.append(tip)
-            text = ", ".join(parts) + " (source: OpenStreetMap)"
-            # A building is often mapped twice (as a point and an outline).
-            key = (name.lower(), label)
-            if key not in best or metres < best[key][0]:
-                best[key] = (metres, name, text)
-
-        return sorted(best.values())[:MAX_PLACES]
+        return _parse_elements(data["elements"], lat, lon)
 
     # ── Source 3: Devpost ───────────────────────────────────────────────────
 
-    def _events(self) -> list[str]:
+    def _devpost(self) -> list[dict]:
         data = self._get_json(
             "https://devpost.com/api/hackathons?"
             + urlencode([
@@ -333,27 +394,78 @@ class App:
         if not isinstance(data, dict) or not isinstance(data.get("hackathons"), list):
             raise SourceFailed("Devpost answered without a list of hackathons")
 
-        events: list[str] = []
+        events: list[dict] = []
         for hackathon in data["hackathons"]:
             if not isinstance(hackathon, dict):
                 continue
             where = ((hackathon.get("displayed_location") or {}).get("location") or "").strip()
-            lowered = where.lower()
-            # "London" also matches London, Ontario.
-            if "london" not in lowered or "ontario" in lowered or "canada" in lowered:
+            if not _mentions_london(where):
                 continue
             title = (hackathon.get("title") or "").strip()
             link = (hackathon.get("url") or "").strip()
             if not title or not link.startswith("https://"):
                 continue
-            when = (hackathon.get("submission_period_dates") or "date not given").strip()
-            events.append(f"{title}, {when}, {where}, {link} (source: Devpost)")
-            if len(events) == MAX_EVENTS:
-                break
+            when = (hackathon.get("submission_period_dates") or "").strip()
+            first, last = _devpost_dates(when)
+            themes = " ".join(
+                t.get("name", "") for t in hackathon.get("themes") or [] if isinstance(t, dict)
+            )
+            events.append({
+                "title": title, "label": HACKATHON, "when": when or "date not given",
+                "start": first, "end": last, "where": where, "link": link,
+                "source": "Devpost", "text": f"{title} {themes}",
+            })
         return events
 
 
-# ── Helpers ─────────────────────────────────────────────────────────────────
+# ── Places ──────────────────────────────────────────────────────────────────
+
+
+def _snapshot():
+    """The saved Greater London OpenStreetMap data, or None if unreadable."""
+    try:
+        data = json.loads(SNAPSHOT_PATH.read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("elements"), list):
+        return None
+    return data
+
+
+def _parse_elements(elements, lat: float, lon: float) -> list[dict]:
+    """Overpass elements to places within RADIUS_M, nearest first."""
+    best: dict[tuple[str, str], dict] = {}
+    for element in elements:
+        if not isinstance(element, dict):
+            continue
+        tags = element.get("tags") or {}
+        kind = _kind(tags)
+        if kind is None or _need_based(tags):
+            continue
+        centre = element.get("center") or {}
+        plat = element.get("lat", centre.get("lat"))
+        plon = element.get("lon", centre.get("lon"))
+        if plat is None or plon is None:
+            continue
+        exact = _distance_m(lat, lon, float(plat), float(plon))
+        if exact > RADIUS_M:
+            continue
+        metres = int(round(exact / 10) * 10)
+        label, tip, unnamed = kind
+        name = (tags.get("name") or tags.get("name:en") or unnamed).strip()
+        parts = [name, label, f"{metres} m"]
+        if tags.get("opening_hours"):
+            parts.append(f"open {tags['opening_hours'].strip()}")
+        parts.append(tip)
+        place = {
+            "metres": metres, "name": name, "langar": tip == LANGAR_TIP,
+            "text": ", ".join(parts) + " (source: OpenStreetMap)",
+        }
+        # A building is often mapped twice (as a point and an outline).
+        key = (name.lower(), label)
+        if key not in best or metres < best[key]["metres"]:
+            best[key] = place
+    return sorted(best.values(), key=lambda p: (p["metres"], p["name"]))
 
 
 def _kind(tags: dict):
@@ -386,30 +498,171 @@ def _distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * radius * math.asin(math.sqrt(a))
 
 
+# ── Cuisine ─────────────────────────────────────────────────────────────────
+
+
+def _match_cuisine(cuisine: str, places: list[dict], events: list[dict], notes: list[str]):
+    """Keep what matches the cuisine; if nothing does, keep everything and say so."""
+    wanted = re.sub(r"\s+(food|meals?|dishes)$", "", cuisine.lower()).strip()
+    terms = CUISINE_WORDS.get(wanted, [re.escape(wanted)])
+    pattern = re.compile(r"\b(?:" + "|".join(terms) + r")\b", re.IGNORECASE)
+
+    good_places = [p for p in places if p["langar"] and wanted in LANGAR_CUISINES]
+    good_events = [e for e in events if pattern.search(e["text"])]
+
+    if not good_places and not good_events:
+        if places or events:
+            notes.append(f"Nothing matched {cuisine}, so here is everything else.")
+        return places, events
+
+    if good_places:
+        notes.append(f"Langar at a gurdwara is Punjabi vegetarian food, so it fits {cuisine}.")
+    missed = [name for name, have, good in (("places", places, good_places),
+                                            ("events", events, good_events)) if have and not good]
+    if missed:
+        notes.append(f"No {' or '.join(missed)} matched {cuisine}, so all of those are shown.")
+    return (good_places or places), (good_events or events)
+
+
+# ── Events and dates ────────────────────────────────────────────────────────
+
+MONTHS = {m: i for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
+WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+
+DEVPOST_DATES = re.compile(
+    r"^\s*([A-Za-z]{3})[a-z]*\s+(\d{1,2})(?:,\s*(\d{4}))?"
+    r"(?:\s*-\s*(?:([A-Za-z]{3})[a-z]*\s+)?(\d{1,2})(?:,\s*(\d{4}))?)?\s*$"
+)
+
+
+def _devpost_dates(text: str):
+    """(start, end) from "Nov 20 - 22, 2026" and its variants, or (None, None)."""
+    m = DEVPOST_DATES.match(text or "")
+    if not m:
+        return None, None
+    m1, d1, y1, m2, d2, y2 = m.groups()
+    month1 = MONTHS.get(m1.lower())
+    month2 = MONTHS.get(m2.lower()) if m2 else month1
+    year2 = int(y2) if y2 else (int(y1) if y1 else None)
+    if not month1 or not month2 or year2 is None:
+        return None, None
+    year1 = int(y1) if y1 else (year2 - 1 if month1 > month2 else year2)
+    try:
+        first = date(year1, month1, int(d1))
+        last = date(year2, month2, int(d2)) if d2 else first
+    except ValueError:
+        return None, None
+    return first, last
+
+
+def _window(text: str, today: date):
+    """(start, end, words for it, understood) for what the user said."""
+    default = (today, today + timedelta(days=DEFAULT_DAYS - 1), "in the next 14 days")
+    t = re.sub(r"[^a-z0-9 /-]", " ", (text or "").lower())
+    t = " ".join(t.split())
+    t = re.sub(r"^(on|for|in|over|during|within|by)\s+", "", t)
+    if not t:
+        return (*default, True)
+
+    def weekend(weeks_ahead: int):
+        saturday = today + timedelta(days=(5 - today.weekday()) % 7)
+        if today.weekday() == 6:  # Sunday: this weekend is today
+            saturday = today - timedelta(days=1)
+        saturday += timedelta(weeks=weeks_ahead)
+        return max(saturday, today), saturday + timedelta(days=1)
+
+    if t in ("today", "tonight", "this evening"):
+        return today, today, "today", True
+    if t == "tomorrow":
+        return today + timedelta(days=1), today + timedelta(days=1), "tomorrow", True
+    if t in ("this weekend", "weekend", "the weekend"):
+        return (*weekend(0), "this weekend", True)
+    if t == "next weekend":
+        return (*weekend(1), "next weekend", True)
+    if t == "this week":
+        return today, today + timedelta(days=6 - today.weekday()), "this week", True
+    if t == "next week":
+        monday = today + timedelta(days=7 - today.weekday())
+        return monday, monday + timedelta(days=6), "next week", True
+    if t == "this month":
+        following = (today.replace(day=28) + timedelta(days=4)).replace(day=1)
+        return today, following - timedelta(days=1), "this month", True
+    if t in ("next month", "a month", "the next month"):
+        return today, today + timedelta(days=30), "in the next month", True
+    if t in ("next few days", "the next few days", "few days", "a few days"):
+        return today, today + timedelta(days=2), "in the next few days", True
+
+    m = re.fullmatch(r"(?:the )?(?:next |coming )?(\d{1,2}) (days?|weeks?)", t)
+    if m and int(m.group(1)) >= 1:
+        n = int(m.group(1)) * (7 if m.group(2).startswith("week") else 1)
+        return today, today + timedelta(days=n - 1), f"in the next {m.group(1)} {m.group(2)}", True
+
+    m = re.fullmatch(r"(this |next |coming |on )?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?", t)
+    if m:
+        day = today + timedelta(days=(WEEKDAYS.index(m.group(2)) - today.weekday()) % 7)
+        if m.group(1) == "next " and day == today:
+            day += timedelta(days=7)
+        return day, day, f"on {m.group(2).capitalize()} {day.day} {day.strftime('%B')}", True
+
+    for fmt in ("%Y-%m-%d", "%d %B", "%d %b", "%B %d", "%b %d", "%d/%m/%Y", "%d/%m"):
+        try:
+            parsed = datetime.strptime(t, fmt).date()
+        except ValueError:
+            continue
+        if "%Y" not in fmt:
+            parsed = parsed.replace(year=today.year)
+            if parsed < today:
+                parsed = parsed.replace(year=today.year + 1)
+        return parsed, parsed, f"on {parsed.day} {parsed.strftime('%B')}", True
+
+    return (*default, False)
+
+
+def _in_window(event: dict, start: date, end: date, asked: bool) -> bool:
+    if event["start"] is None:
+        return not asked  # an undated event only when no time was asked for
+    return event["start"] <= end and (event["end"] or event["start"]) >= start
+
+
+def _mentions_london(where: str) -> bool:
+    lowered = where.lower()
+    # "London" also matches London, Ontario.
+    return "london" in lowered and "ontario" not in lowered and "canada" not in lowered
+
+
+def _event_text(e: dict) -> str:
+    return f"{e['title']}, {e['label']}, {e['when']}, {e['where']}, {e['link']} (source: {e['source']})"
+
+
+# ── Words ───────────────────────────────────────────────────────────────────
+
+
+def _clean(value) -> str:
+    return " ".join(str(value or "").split())
+
+
 def _join(names: list[str]) -> str:
     if len(names) <= 1:
         return "".join(names)
     return ", ".join(names[:-1]) + " or " + names[-1]
 
 
-def _narrative(place, label, places, events, failed) -> str:
+def _narrative(place, label, places, events, period, failed) -> str:
     n = len(events)
-    hackathons = (
-        f"{n} upcoming London hackathon{'s' if n != 1 else ''} on Devpost"
-        f"{', which usually feeds participants' if n == 1 else ', which usually feed participants'}"
-    )
+    found = f"{n} London event{'s' if n != 1 else ''} with likely free food {period}"
     if places:
-        metres, name, _ = places[0]
-        sentence = f"The nearest free food to {label} is {name}, {metres} m away"
+        first = places[0]
+        sentence = f"The nearest free food to {label} is {first['name']}, {first['metres']} m away"
         if events:
-            sentence += f", and there {'is' if n == 1 else 'are'} {hackathons}"
+            sentence += f", and there {'is' if n == 1 else 'are'} {found}"
     elif place and OVERPASS not in failed and GEOCODE not in failed:
         sentence = (
             f"I found no community fridges or gurdwaras within 2 km of {label}, "
-            f"but there {'is' if n == 1 else 'are'} {hackathons}"
+            f"but there {'is' if n == 1 else 'are'} {found}"
         )
     else:
-        sentence = f"There {'is' if n == 1 else 'are'} {hackathons}"
+        sentence = f"There {'is' if n == 1 else 'are'} {found}"
         if not place:
             sentence += "; tell me an area to find community fridges and gurdwaras too"
     if failed:

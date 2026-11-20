@@ -1,0 +1,425 @@
+{
+ "fetched": "2026-11-20",
+ "osm_data_as_of": "2026-11-20T15:31:36Z",
+ "attribution": "© OpenStreetMap contributors. Data available under the Open Database License (ODbL): https://www.openstreetmap.org/copyright",
+ "source": "Overpass API (overpass-api.de), Greater London bounding box 51.28,-0.52,51.70,0.34",
+ "query": "nwr[amenity=food_sharing]; nwr[amenity=give_box]; nwr[amenity=place_of_worship][religion=sikh]; out center tags",
+ "elements": [
+  {
+   "type": "node",
+   "id": 403893307,
+   "lat": 51.490503,
+   "lon": 0.161041,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Guru Nanak Durbar Sikh Temple",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "node",
+   "id": 724398573,
+   "lat": 51.539997,
+   "lon": 0.07533,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Gurdwara Singh Sabha",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "node",
+   "id": 746805735,
+   "lat": 51.614434,
+   "lon": -0.139821,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Nanak Darbar North London",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "node",
+   "id": 8971490590,
+   "lat": 51.565781,
+   "lon": 0.010526,
+   "tags": {
+    "amenity": "food_sharing",
+    "name": "Leytonstone Community Fridge",
+    "opening_hours": "Fr 12:00+; Sa 12:00+; || \"alternate Sundays, check website\"",
+    "operator": "Transition Leytonstone"
+   }
+  },
+  {
+   "type": "node",
+   "id": 12087620621,
+   "lat": 51.697831,
+   "lon": -0.192688,
+   "tags": {
+    "amenity": "food_sharing"
+   }
+  },
+  {
+   "type": "node",
+   "id": 12420022109,
+   "lat": 51.542122,
+   "lon": -0.20701,
+   "tags": {
+    "amenity": "give_box",
+    "operator": "Traid"
+   }
+  },
+  {
+   "type": "way",
+   "id": 51787779,
+   "lat": 51.528516,
+   "lon": -0.028938,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Gurdwara Sikh Sangat",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 61886787,
+   "lat": 51.456964,
+   "lon": -0.075016,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Gurdwara Baba Buddha Sahib Ji",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 112603231,
+   "lat": 51.506661,
+   "lon": -0.215778,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Central Gurdwara (Khalsa Jatha)",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 144357700,
+   "lat": 51.543289,
+   "lon": 0.025859,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Namdhari Gurdwara",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 192892223,
+   "lat": 51.506861,
+   "lon": -0.37778,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Shri Guru Singh Sabha - Southall Sikh Temple",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 192894725,
+   "lat": 51.510031,
+   "lon": -0.381261,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Ramgarhia Sabha",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 194112910,
+   "lat": 51.507765,
+   "lon": -0.374614,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Guru Granth Gurdwara",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 194555947,
+   "lat": 51.500403,
+   "lon": -0.380951,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Gurudwara Sri Guru Singh Sabha",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 202005809,
+   "lat": 51.498106,
+   "lon": -0.39509,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Shri Guru Ravi Dass Sabha Southall",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 206138735,
+   "lat": 51.522099,
+   "lon": -0.378088,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Gurdwara Nanaksar",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 208262443,
+   "lat": 51.51753,
+   "lon": -0.329751,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Gurdwara London Sikh Centre Ealing",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 274679076,
+   "lat": 51.382338,
+   "lon": -0.097236,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Siri Guru Singh Sabha",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 302958244,
+   "lat": 51.56125,
+   "lon": 0.085828,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Gurdwara Karamsar Temple",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 324577975,
+   "lat": 51.4992,
+   "lon": -0.382967,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Sri Guru Amardass Gurdwara",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 679248287,
+   "lat": 51.561352,
+   "lon": -0.002769,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Gurdwara Sikh Sangat London East",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 791165739,
+   "lat": 51.452172,
+   "lon": -0.198592,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Sikh Gurdwara South London Southfields",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 821973839,
+   "lat": 51.464045,
+   "lon": -0.367189,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Gurdwara Sri Guru Singh Sabha",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 835405590,
+   "lat": 51.401132,
+   "lon": -0.288554,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Gurudwara Sri Guru Har Rai Sahib Ji",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 872299437,
+   "lat": 51.544935,
+   "lon": 0.025334,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Shri Gurdehra Sahib",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 938601730,
+   "lat": 51.43339,
+   "lon": -0.162688,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Khalsa Centre Tooting",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 940717920,
+   "lat": 51.443778,
+   "lon": 0.212692,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Gurdwara Guru Hargobind Sahib",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 942380741,
+   "lat": 51.653192,
+   "lon": -0.396813,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Sri Guru Singh Sabha Watford Gurdwara",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 955328131,
+   "lat": 51.551913,
+   "lon": 0.048558,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Shri Guru Ravi Dass Bhawan",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 1008664232,
+   "lat": 51.5372,
+   "lon": 0.023477,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Ramgarhia Sikh Gurdwara",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 1013715780,
+   "lat": 51.543769,
+   "lon": 0.055939,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Gurdwara Dasmesh Darbar",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 1014363319,
+   "lat": 51.537236,
+   "lon": 0.029743,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Shiromani Bhagat Namdev JI Mission & Community Centre",
+    "operator": "Kshatrya Sabha London",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 1073568266,
+   "lat": 51.527493,
+   "lon": -0.021103,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Gurdwara Sikh Sangat",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 1227115904,
+   "lat": 51.510091,
+   "lon": -0.380813,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Bhai Lalo Darbar",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 1243707732,
+   "lat": 51.477386,
+   "lon": 0.31929,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Gurudwara Grays",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 1289003993,
+   "lat": 51.488488,
+   "lon": 0.070102,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Ramgarhia Sikh Association, Woolwich",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 1451018871,
+   "lat": 51.512701,
+   "lon": -0.388802,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "Gurdwara Miri Piri Sahib",
+    "religion": "sikh"
+   }
+  },
+  {
+   "type": "way",
+   "id": 1553934622,
+   "lat": 51.649984,
+   "lon": 0.001759,
+   "tags": {
+    "amenity": "place_of_worship",
+    "religion": "sikh"
+   }
+  }
+ ]
+}

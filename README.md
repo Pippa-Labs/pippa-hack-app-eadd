@@ -4,22 +4,36 @@ A Pippa app that tells a student where to get free food near a London area,
 postcode or station: community fridges and food-sharing points, gurdwaras
 (whose langar is a free vegetarian meal open to everyone), and upcoming
 in-person London hackathons, which usually feed participants. Ask it things
-like *"free food near Camden"*, *"langar near Southall"* or *"any free food
-events in london"*.
+like *"free food near Camden"*, *"langar near Southall"*, *"free asian food
+in london"* or *"free food events in camden on saturday"*.
+
+You can say **when** ("saturday", "this weekend", "next 3 days"; events
+default to the next 14 days) and **what kind of food** ("pizza", "asian",
+"vegetarian"). Langar is Punjabi vegetarian food, so it counts for Indian,
+Asian, Punjabi and vegetarian, but not vegan. If nothing matches, you get
+everything else and a note saying so.
 
 Food banks and soup kitchens are never listed: they are for people in need.
+
+**Reliability.** Every source runs in parallel with a 6-second timeout, and
+the app answers within about 12 seconds. If the main OpenStreetMap server is
+slow it asks a mirror, and if both are slow it uses `osm_london.json`: real
+OpenStreetMap data for Greater London (community fridges, food-sharing
+points, give boxes and gurdwaras), saved on 20 November 2026, with its
+attribution. The answer says when saved data was used. Places are never made
+up, so an area with nothing mapped gets an honest "nothing within 2 km".
 
 ## Trust
 
 - **No keys, no accounts.** Every source is public and keyless:
   postcodes.io, Nominatim and Overpass (OpenStreetMap), and Devpost.
-- **No social media scraping.** Those sites need a login and their terms
-  forbid it, so the app does not touch them.
+- **No social media scraping.** X, Instagram and Facebook need a login and
+  their terms forbid scraping, so the app never touches them.
 - **Keeps nothing.** Each question is answered fresh and forgotten; the app
   is never told who is asking.
 - **Every item names its source**: places say OpenStreetMap, events say
   Devpost and link to the event page, and the answer says which source, if
-  any, could not be reached.
+  any, could not be reached, or when saved data was used.
 
 ## Roadmap
 
