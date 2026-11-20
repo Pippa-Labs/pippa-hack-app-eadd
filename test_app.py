@@ -17,7 +17,10 @@ from datetime import date, datetime, timezone
 import pytest
 from pippa_agentapp_sdk import LocalRunner, OutputShapeViolation, Result
 
-from app import App, NeedAPlace, NothingFound, PlaceNotFound, SourcesDown, _devpost_dates
+from pathlib import Path
+
+import app as app_module
+from app import App, NothingFound, PlaceNotFound, SourcesDown, _devpost_dates
 
 # Friday 20 November 2026, midday in London. WoHack is on Saturday the 21st.
 NOW = datetime(2026, 11, 20, 12, 0, tzinfo=timezone.utc)
@@ -174,18 +177,76 @@ def test_an_html_error_page_counts_as_a_failure():
     assert "Could not reach this time: Devpost." in result.data["sources"]
 
 
-def test_everything_down_is_a_retryable_error_naming_the_sources():
+def no_saved_data(monkeypatch):
+    monkeypatch.setattr(app_module, "SNAPSHOT_PATH", Path("/nonexistent/osm_london.json"))
+
+
+def test_everything_down_is_a_retryable_error_naming_the_sources(monkeypatch):
+    no_saved_data(monkeypatch)
     app = all_up(overpass=TimeoutError(), devpost=urllib.error.URLError("dns"))
     with pytest.raises(SourcesDown) as failure:
-        call(app, "SE1 7PB")  # the saved data has nothing within 2 km of SE1
+        call(app, "SE1 7PB")
     assert failure.value.retryable is True
+    assert "OpenStreetMap (Overpass)" in failure.value.user_message
     assert "Devpost" in failure.value.user_message
+
+
+# ── Every path answers ──────────────────────────────────────────────────────
+
+
+def assert_answers(result: Result):
+    assert result.narrative and result.narrative.strip()
+    assert result.data["places"] or result.data["events"]
+
+
+def test_i_want_piazza_where_food():
+    """"@Free Food London i want piazza where food" gave an empty reply.
+
+    Pippa may extract it any of these ways; every one must answer.
+    "piazza" as a place is a real spot in Bromley-by-Bow, with nothing
+    mapped within 2 km of it.
+    """
+    nominatim_piazza = [{"lat": "51.5254552", "lon": "-0.0104496", "name": "Piazza"}]
+    for inputs in ({"location": "", "cuisine": "piazza"},
+                   {"location": "", "cuisine": "pizza"},
+                   {"location": "", "cuisine": ""},
+                   {"location": "piazza", "cuisine": "piazza"}):
+        app = all_up(nominatim=nominatim_piazza, overpass={"elements": []})
+        result = call(app, inputs["location"], cuisine=inputs["cuisine"])
+        assert_answers(result)
+        assert result.data["places"], inputs
+        if inputs["cuisine"]:
+            assert "Nothing matched piazza" in result.data["note"] or \
+                "Nothing matched pizza" in result.data["note"]
+
+
+def test_no_area_searches_all_of_london_and_asks_for_an_area():
+    app = stubbed(devpost=DEVPOST)  # a geocode or Overpass call would fail
+    result = call(app, "")
+    assert_answers(result)
+    assert len(result.data["places"]) == 5
+    assert all("m from central London" in p for p in result.data["places"])
+    assert result.data["events"] == [WOHACK]
+    assert "name an area for nearby results" in result.data["note"].lower()
+    assert "saved snapshot" in result.data["sources"]
+
+
+def test_free_food_near_camden():
+    """0.1.0 gave an empty reply: nothing is mapped within 2 km of Camden."""
+    nominatim_camden = [{"lat": "51.5427966", "lon": "-0.1624803", "name": "Camden"}]
+    for overpass in ({"elements": []}, http_error(504)):  # live empty, or down
+        result = call(all_up(nominatim=nominatim_camden, overpass=overpass), "camden")
+        assert_answers(result)
+        assert result.data["places"]
+        assert "Nothing is mapped within 2 km of camden" in result.data["note"]
+        assert result.narrative.startswith("The nearest free food to camden is ")
 
 
 # ── Nothing there, or not a place ───────────────────────────────────────────
 
 
-def test_nothing_found_suggests_a_wider_area():
+def test_nothing_found_suggests_a_wider_area(monkeypatch):
+    no_saved_data(monkeypatch)
     with pytest.raises(NothingFound) as failure:
         call(all_up(overpass={"elements": []}, devpost={"hackathons": []}), "SE1 7PB")
     assert "wider area" in failure.value.user_message
@@ -203,14 +264,6 @@ def test_an_unknown_postcode_is_named():
     with pytest.raises(PlaceNotFound) as failure:
         call(all_up(postcodes=http_error(404)), "ZZ9 9ZZ")
     assert "ZZ9 9ZZ" in failure.value.user_message
-
-
-def test_no_place_returns_london_events_without_guessing_a_place():
-    app = stubbed(devpost=DEVPOST)  # a geocode or Overpass call would fail
-    result = call(app, "")
-    assert result.data == {"places": [], "events": [WOHACK], "sources": result.data["sources"]}
-    with pytest.raises(NeedAPlace):
-        call(stubbed(devpost={"hackathons": []}), "")
 
 
 # ── when ────────────────────────────────────────────────────────────────────

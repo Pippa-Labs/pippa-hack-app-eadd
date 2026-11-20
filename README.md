@@ -21,7 +21,9 @@ slow it asks a mirror, and if both are slow it uses `osm_london.json`: real
 OpenStreetMap data for Greater London (community fridges, food-sharing
 points, give boxes and gurdwaras), saved on 20 November 2026, with its
 attribution. The answer says when saved data was used. Places are never made
-up, so an area with nothing mapped gets an honest "nothing within 2 km".
+up: an area with nothing mapped within 2 km gets the nearest mapped places
+with their real distance, and a question that names no area gets places from
+all of Greater London plus a note asking for an area.
 
 ## Trust
 

@@ -13,7 +13,7 @@ app:
   # Fixed by the repository name (Pippa-Labs/pippa-hack-app-eadd).
   id: hack.app_eadd
   name: Free Food London
-  version: 0.2.0
+  version: 0.2.1
   # Never use the word "by" here: the badge splits on it.
   summary: >-
     Finds free food near a London area, postcode or station: community
@@ -50,7 +50,8 @@ outcomes:
           as they wrote it, for example "Camden", "E1 6AN", "SE1" or "King's
           Cross station". If the message does not name a place, return an
           empty string. Never guess, and never fill in a place the user did
-          not write.
+          not write. A kind of food is never a place: "pizza", "piazza" (a
+          misspelling of pizza) or "asian" goes in cuisine, not here.
       - name: when
         type: string
         required: false
@@ -63,7 +64,8 @@ outcomes:
         required: false
         description: >-
           The kind of food the user asked for, as they wrote it, for example
-          "asian", "pizza", "indian" or "vegetarian". If the message only
+          "asian", "pizza" (also when misspelt "piazza"), "indian" or
+          "vegetarian". If the message only
           says "free food", "a free meal" or "free lunch" without a kind of
           food, return an empty string. Never guess.
     output:

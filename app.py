@@ -48,7 +48,7 @@ MANIFEST_PATH = Path(__file__).with_name("manifest.yaml")
 SNAPSHOT_PATH = Path(__file__).with_name("osm_london.json")
 
 #: Nominatim and Overpass ask for a descriptive User-Agent; urllib sends none.
-USER_AGENT = "pippa-agent-app-free-food-london/0.2 (https://github.com/Pippa-Labs)"
+USER_AGENT = "pippa-agent-app-free-food-london/0.2.1 (https://github.com/Pippa-Labs)"
 
 #: Per-request timeout for each source, in seconds.
 TIMEOUT = 6.0
@@ -63,6 +63,8 @@ MAX_EVENTS = 3
 DEFAULT_DAYS = 14
 
 LONDON_TZ = ZoneInfo("Europe/London")
+#: Charing Cross, where distances are measured from when no area is named.
+CENTRAL_LONDON = (51.5074, -0.1278)
 #: Greater London, with a small margin: south, north, west, east.
 LONDON_BOX = (51.28, 51.70, -0.52, 0.34)
 
@@ -88,6 +90,8 @@ CUISINE_WORDS = {
     "vegan": ["vegan", "plant[- ]based"],
     "pizza": ["pizzas?"],
 }
+#: Common misspellings, read as the cuisine they were meant to be.
+CUISINE_ALIASES = {"piazza": "pizza", "pizzas": "pizza", "pitza": "pizza", "vegitarian": "vegetarian"}
 
 GEOCODE = "the place lookup (postcodes.io / Nominatim)"
 OVERPASS = "OpenStreetMap (Overpass)"
@@ -189,6 +193,9 @@ class App:
         places: list[dict] = []
         label = place
         used_snapshot = False
+        saved = _snapshot()
+        saved_elements = saved["elements"] if saved else []
+        spot = None
 
         pool = ThreadPoolExecutor(max_workers=4)
         try:
@@ -197,7 +204,6 @@ class App:
             events_job = pool.submit(self._devpost)
 
             if place:
-                spot = None
                 try:
                     spot = pool.submit(self._geocode, place).result(timeout=TIMEOUT + 0.5)
                 except SOURCE_ERRORS:
@@ -211,23 +217,30 @@ class App:
                             "or \"King's Cross\"."
                         )
                         raise error
-                    lat, lon, label = spot
 
-                if spot is not None:
-                    live = self._live_places(pool, lat, lon, deadline)
-                    if live is not None:
-                        places = live
-                    else:
-                        saved = _snapshot()
-                        if saved:
-                            places = _parse_elements(saved["elements"], lat, lon)
-                            used_snapshot = True
-                            notes.append(
-                                "The live map was slow, so places come from saved "
-                                f"OpenStreetMap data from {saved['fetched']}."
-                            )
-                        else:
-                            failed.append(OVERPASS)
+            if spot is not None:
+                lat, lon, label = spot
+                live = self._live_places(pool, lat, lon, deadline)
+                if live is not None:
+                    places = live
+                elif saved:
+                    places = _parse_elements(saved_elements, lat, lon)
+                    used_snapshot = True
+                    notes.append(
+                        "The live map was slow, so places come from saved "
+                        f"OpenStreetMap data from {saved['fetched']}."
+                    )
+                else:
+                    failed.append(OVERPASS)
+                if not places and saved_elements:
+                    # Nothing mapped within 2 km: the nearest real places,
+                    # with their real distance, beat an empty answer.
+                    places = _parse_elements(saved_elements, lat, lon, radius=None)
+                    used_snapshot = True
+                    notes.append(
+                        f"Nothing is mapped within 2 km of {label}, so these are "
+                        "the nearest mapped places in London."
+                    )
 
             raw_events: list[dict] = []
             try:
@@ -238,6 +251,24 @@ class App:
             # Never wait for a source that is still hanging: its answer is no
             # longer wanted, and the user is.
             pool.shutdown(wait=False, cancel_futures=True)
+
+        # No place named, or it could not be looked up: all of Greater London,
+        # from the saved data, measured from central London.
+        area_wide = spot is None and bool(saved_elements)
+        if area_wide:
+            places = _parse_elements(saved_elements, *CENTRAL_LONDON, radius=None,
+                                     origin="central London")
+            used_snapshot = True
+            if place:
+                notes.append(
+                    f"I could not look up {place} just now, so these are from all "
+                    "of Greater London, with distances from central London."
+                )
+            else:
+                notes.append(
+                    "No area was named, so these are from all of Greater London, "
+                    "with distances from central London. Name an area for nearby results."
+                )
 
         if not understood:
             notes.append(f"I could not tell when \"{when}\" is, so events are for the next 14 days.")
@@ -288,7 +319,7 @@ class App:
 
         return Result(
             data=data,
-            narrative=_narrative(place, label, places, events, period, failed),
+            narrative=_narrative(place, label, places, events, period, failed, area_wide),
             warnings=tuple(f"Could not reach {name}." for name in failed),
         )
 
@@ -432,8 +463,12 @@ def _snapshot():
     return data
 
 
-def _parse_elements(elements, lat: float, lon: float) -> list[dict]:
-    """Overpass elements to places within RADIUS_M, nearest first."""
+def _parse_elements(elements, lat: float, lon: float, radius=RADIUS_M, origin=None) -> list[dict]:
+    """Overpass elements to places within `radius` m (None: any), nearest first.
+
+    `origin` names where distances are measured from, when that is not the
+    place the user asked about.
+    """
     best: dict[tuple[str, str], dict] = {}
     for element in elements:
         if not isinstance(element, dict):
@@ -448,12 +483,12 @@ def _parse_elements(elements, lat: float, lon: float) -> list[dict]:
         if plat is None or plon is None:
             continue
         exact = _distance_m(lat, lon, float(plat), float(plon))
-        if exact > RADIUS_M:
+        if radius is not None and exact > radius:
             continue
         metres = int(round(exact / 10) * 10)
         label, tip, unnamed = kind
         name = (tags.get("name") or tags.get("name:en") or unnamed).strip()
-        parts = [name, label, f"{metres} m"]
+        parts = [name, label, f"{metres} m" + (f" from {origin}" if origin else "")]
         if tags.get("opening_hours"):
             parts.append(f"open {tags['opening_hours'].strip()}")
         parts.append(tip)
@@ -504,6 +539,7 @@ def _distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 def _match_cuisine(cuisine: str, places: list[dict], events: list[dict], notes: list[str]):
     """Keep what matches the cuisine; if nothing does, keep everything and say so."""
     wanted = re.sub(r"\s+(food|meals?|dishes)$", "", cuisine.lower()).strip()
+    wanted = CUISINE_ALIASES.get(wanted, wanted)
     terms = CUISINE_WORDS.get(wanted, [re.escape(wanted)])
     pattern = re.compile(r"\b(?:" + "|".join(terms) + r")\b", re.IGNORECASE)
 
@@ -648,10 +684,21 @@ def _join(names: list[str]) -> str:
     return ", ".join(names[:-1]) + " or " + names[-1]
 
 
-def _narrative(place, label, places, events, period, failed) -> str:
+def _narrative(place, label, places, events, period, failed, area_wide=False) -> str:
+    """One plain sentence, never empty."""
     n = len(events)
     found = f"{n} London event{'s' if n != 1 else ''} with likely free food {period}"
-    if places:
+    if places and area_wide:
+        first = places[0]
+        sentence = (
+            f"Here is free food across Greater London, starting with {first['name']}, "
+            f"{first['metres']} m from central London"
+        )
+        if events:
+            sentence += f", and there {'is' if n == 1 else 'are'} {found}"
+        if not place:
+            sentence += "; name an area for nearby results"
+    elif places:
         first = places[0]
         sentence = f"The nearest free food to {label} is {first['name']}, {first['metres']} m away"
         if events:
@@ -667,4 +714,4 @@ def _narrative(place, label, places, events, period, failed) -> str:
             sentence += "; tell me an area to find community fridges and gurdwaras too"
     if failed:
         sentence += f" (I could not reach {_join(failed)} this time)"
-    return sentence + "."
+    return (sentence or "Here is free food in London") + "."
